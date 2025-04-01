@@ -1,0 +1,237 @@
+# GitLab CI/CD Pipeline for Flask API and React Frontend Deployment with Nginx
+# This pipeline deploys to a Windows server without internet access
+
+variables:
+  WINDOWS_SERVER: "server-hostname"
+  DEPLOY_PATH: "C:\\app_deployment"
+  PYTHON_PATH: "C:\\Python39\\python.exe"
+  VENV_NAME: "venv"
+  FLASK_PORT: "5000"
+  NGINX_PORT: "80"
+  NGINX_PATH: "C:\\nginx"
+  NGINX_CONFIG_PATH: "config/nginx.conf"
+  # The following variables should be set in GitLab CI/CD settings as masked variables
+  # WINDOWS_USERNAME: Windows server username
+  # WINDOWS_PASSWORD: Windows server password
+
+stages:
+  - build
+  - deploy
+  - verify
+
+# Job to prepare backend application
+prepare_backend:
+  stage: build
+  script:
+    # Create backend deployment package
+    - mkdir -p backend_package
+    - cp -r api/* backend_package/
+    
+    # Create or ensure requirements.txt exists
+    - |
+      if [ ! -f "backend_package/requirements.txt" ]; then
+        echo "flask==2.0.1
+        werkzeug==2.0.1
+        flask-cors==3.0.10" > backend_package/requirements.txt
+      fi
+    
+    # Create batch script to start Flask app
+    - |
+      cat > backend_package/start_flask.bat << 'EOF'
+      @echo off
+      cd %~dp0
+      call ${VENV_NAME}\Scripts\activate.bat
+      echo Starting Flask application on port ${FLASK_PORT}...
+      set FLASK_ENV=production
+      set FLASK_APP=app.py
+      start /B %PYTHON_PATH% -m flask run --host=0.0.0.0 --port=${FLASK_PORT}
+      echo Flask application started.
+      EOF
+    
+    # Create batch script for offline dependency installation
+    - |
+      cat > backend_package/setup_venv.bat << 'EOF'
+      @echo off
+      cd %~dp0
+      echo Setting up virtual environment...
+      if not exist ${VENV_NAME} (
+          echo Creating virtual environment...
+          "${PYTHON_PATH}" -m venv ${VENV_NAME}
+      )
+      call ${VENV_NAME}\Scripts\activate.bat
+      
+      echo Installing dependencies from wheels directory (if available)...
+      if exist wheels (
+          pip install --no-index --find-links=wheels -r requirements.txt
+      ) else (
+          echo WARNING: No wheels directory found. Cannot install dependencies without internet.
+          echo You need to provide pre-downloaded wheels for offline installation.
+      )
+      
+      echo Setup complete.
+      EOF
+    
+    # Create batch script to stop Flask app
+    - |
+      cat > backend_package/stop_flask.bat << 'EOF'
+      @echo off
+      echo Stopping Flask application...
+      for /f "tokens=5" %%a in ('netstat -ano ^| findstr :${FLASK_PORT}') do (
+          echo Killing process: %%a
+          taskkill /F /PID %%a
+      )
+      echo Flask application stopped.
+      EOF
+    
+    # Create a zip file of the backend
+    - apt-get update && apt-get install -y zip
+    - cd backend_package && zip -r ../flask_backend.zip * && cd ..
+  artifacts:
+    paths:
+      - flask_backend.zip
+    expire_in: 1 day
+
+# Job to build React frontend
+build_frontend:
+  stage: build
+  script:
+    # Navigate to frontend directory
+    - cd frontend
+    
+    # Check for node_modules or extract from offline archive
+    - |
+      if [ ! -d "node_modules" ] && [ -f "node_modules_offline.zip" ]; then
+        echo "Extracting pre-downloaded node_modules..."
+        unzip -q node_modules_offline.zip
+      fi
+    
+    # Build the React application
+    - npm run build
+    
+    # Create a zip file of the frontend build
+    - apt-get update && apt-get install -y zip
+    - cd build && zip -r ../../react_frontend.zip * && cd ../..
+  artifacts:
+    paths:
+      - react_frontend.zip
+    expire_in: 1 day
+
+# Job to prepare Nginx configuration
+prepare_nginx:
+  stage: build
+  script:
+    # Check if Nginx config exists
+    - |
+      if [ ! -f "${NGINX_CONFIG_PATH}" ]; then
+        echo "Error: Nginx configuration file not found at ${NGINX_CONFIG_PATH}"
+        exit 1
+      fi
+    
+    # Copy Nginx config to working directory
+    - cp ${NGINX_CONFIG_PATH} nginx.conf
+    
+    # Create batch script to start/restart Nginx
+    - |
+      cat > start_nginx.bat << 'EOF'
+      @echo off
+      echo Stopping Nginx if running...
+      taskkill /F /IM nginx.exe /T 2>nul
+      
+      echo Copying Nginx configuration...
+      copy /Y nginx.conf "${NGINX_PATH}\conf\nginx.conf"
+      
+      echo Starting Nginx...
+      cd "${NGINX_PATH}"
+      start nginx
+      echo Nginx started.
+      EOF
+    
+    # Create a zip file with Nginx-related files
+    - apt-get update && apt-get install -y zip
+    - zip nginx_config.zip nginx.conf start_nginx.bat
+  artifacts:
+    paths:
+      - nginx_config.zip
+    expire_in: 1 day
+
+# Job to deploy application to Windows server
+deploy_application:
+  stage: deploy
+  needs:
+    - prepare_backend
+    - build_frontend
+    - prepare_nginx
+  script:
+    # Install dependencies for Windows deployment
+    - apt-get update && apt-get install -y unzip curl p7zip-full
+    
+    # Download PSTools (for remote Windows command execution)
+    - curl -L -o pstools.zip https://download.sysinternals.com/files/PSTools.zip
+    - unzip pstools.zip -d pstools
+    
+    # Create deployment directories
+    - |
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "if not exist ${DEPLOY_PATH} mkdir ${DEPLOY_PATH}"
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "if not exist ${DEPLOY_PATH}\backend mkdir ${DEPLOY_PATH}\backend"
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "if not exist ${DEPLOY_PATH}\frontend mkdir ${DEPLOY_PATH}\frontend"
+    
+    # Copy deployment files to server
+    - |
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "robocopy %CD% ${DEPLOY_PATH} flask_backend.zip react_frontend.zip nginx_config.zip /R:1 /W:1"
+    
+    # Extract files on the server
+    - |
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "cd ${DEPLOY_PATH} && powershell Expand-Archive -Path flask_backend.zip -DestinationPath backend -Force"
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "cd ${DEPLOY_PATH} && powershell Expand-Archive -Path react_frontend.zip -DestinationPath frontend -Force"
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "cd ${DEPLOY_PATH} && powershell Expand-Archive -Path nginx_config.zip -DestinationPath . -Force"
+    
+    # Stop previous Flask instance
+    - |
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "cd ${DEPLOY_PATH}\backend && stop_flask.bat"
+    
+    # Setup Flask environment
+    - |
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "cd ${DEPLOY_PATH}\backend && setup_venv.bat"
+    
+    # Start Flask application
+    - |
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "cd ${DEPLOY_PATH}\backend && start_flask.bat"
+    
+    # Configure and start Nginx
+    - |
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "cd ${DEPLOY_PATH} && start_nginx.bat"
+
+# Job to verify deployment
+verify_deployment:
+  stage: verify
+  needs:
+    - deploy_application
+  script:
+    # Install dependencies for Windows deployment
+    - apt-get update && apt-get install -y curl p7zip-full
+    
+    # Download PSTools if not already available
+    - |
+      if [ ! -d "pstools" ]; then
+        curl -L -o pstools.zip https://download.sysinternals.com/files/PSTools.zip
+        unzip pstools.zip -d pstools
+      fi
+    
+    # Verify Flask application is running
+    - |
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "netstat -ano | findstr :${FLASK_PORT}"
+    
+    # Verify Nginx is running
+    - |
+      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} cmd /c "netstat -ano | findstr :${NGINX_PORT}"
+    
+    - echo "Application deployed successfully:"
+    - echo "- Flask backend running on port ${FLASK_PORT}"
+    - echo "- Nginx serving frontend on port ${NGINX_PORT}"
+    - echo "- Access the application at http://${WINDOWS_SERVER}:${NGINX_PORT}"
+  only:
+    - main  # Only run verification on the main branch
+    
+# This pipeline will run on code changes to the main branch
+only:
+  - main
