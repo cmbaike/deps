@@ -1,5 +1,5 @@
 # GitLab CI/CD Pipeline for Flask API and React Frontend Deployment with Nginx
-# This pipeline deploys to a Windows server without internet access using PowerShell
+# This pipeline deploys to a Windows server without internet access using PowerShell and NSSM
 
 variables:
   WINDOWS_SERVER: "server-hostname"
@@ -10,6 +10,8 @@ variables:
   NGINX_PORT: "80" 
   NGINX_PATH: "C:\\nginx"
   NGINX_CONFIG_PATH: "config/nginx.conf"
+  FLASK_SERVICE_NAME: "FlaskBackend"
+  NGINX_SERVICE_NAME: "NginxWeb"
   # The following variables should be set in GitLab CI/CD settings as masked variables
   # WINDOWS_USERNAME: Windows server username
   # WINDOWS_PASSWORD: Windows server password
@@ -35,22 +37,44 @@ prepare_backend:
         flask-cors==3.0.10" > backend_package/requirements.txt
       fi
     
-    # Create PowerShell script to start Flask app
+    # Create PowerShell script to register/start Flask app as NSSM service
     - |
-      cat > backend_package/start_flask.ps1 << 'EOF'
+      cat > backend_package/setup_flask_service.ps1 << 'EOF'
       $ScriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
       Set-Location -Path $ScriptPath
       
-      # Activate virtual environment
-      & "$ScriptPath\${VENV_NAME}\Scripts\Activate.ps1"
+      # Check if service exists
+      $serviceExists = Get-Service -Name "${FLASK_SERVICE_NAME}" -ErrorAction SilentlyContinue
       
-      Write-Host "Starting Flask application on port ${FLASK_PORT}..."
-      $env:FLASK_ENV = "production"
-      $env:FLASK_APP = "app.py"
+      if ($serviceExists) {
+          Write-Host "Stopping existing Flask service..."
+          Stop-Service -Name "${FLASK_SERVICE_NAME}" -Force
+      } else {
+          Write-Host "Creating Flask service with NSSM..."
+          # Create wrapper script for Flask
+          $flaskWrapper = @"
+      @echo off
+      cd $ScriptPath
+      call $ScriptPath\${VENV_NAME}\Scripts\activate.bat
+      set FLASK_ENV=production
+      set FLASK_APP=app.py
+      "${PYTHON_PATH}" -m flask run --host=0.0.0.0 --port=${FLASK_PORT}
+      "@
+          $flaskWrapper | Out-File -FilePath "$ScriptPath\flask_wrapper.bat" -Encoding ascii
+          
+          # Register the NSSM service
+          nssm install "${FLASK_SERVICE_NAME}" "$ScriptPath\flask_wrapper.bat"
+          nssm set "${FLASK_SERVICE_NAME}" AppDirectory "$ScriptPath"
+          nssm set "${FLASK_SERVICE_NAME}" Description "Flask Backend API Service"
+          nssm set "${FLASK_SERVICE_NAME}" Start SERVICE_AUTO_START
+          nssm set "${FLASK_SERVICE_NAME}" AppStdout "$ScriptPath\flask_service.log"
+          nssm set "${FLASK_SERVICE_NAME}" AppStderr "$ScriptPath\flask_service_error.log"
+      }
       
-      # Start Flask in the background
-      Start-Process -FilePath "${PYTHON_PATH}" -ArgumentList "-m flask run --host=0.0.0.0 --port=${FLASK_PORT}" -NoNewWindow
-      Write-Host "Flask application started."
+      # Start the service
+      Write-Host "Starting Flask service..."
+      Start-Service -Name "${FLASK_SERVICE_NAME}"
+      Write-Host "Flask service started."
       EOF
     
     # Create PowerShell script for offline dependency installation
@@ -79,18 +103,18 @@ prepare_backend:
       Write-Host "Setup complete."
       EOF
     
-    # Create PowerShell script to stop Flask app
+    # Create PowerShell script to stop Flask service
     - |
-      cat > backend_package/stop_flask.ps1 << 'EOF'
-      Write-Host "Stopping Flask application..."
-      $processes = Get-NetTCPConnection -LocalPort ${FLASK_PORT} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess
+      cat > backend_package/stop_flask_service.ps1 << 'EOF'
+      Write-Host "Stopping Flask service..."
+      $serviceExists = Get-Service -Name "${FLASK_SERVICE_NAME}" -ErrorAction SilentlyContinue
       
-      foreach ($process in $processes) {
-          Write-Host "Killing process ID: $process"
-          Stop-Process -Id $process -Force
+      if ($serviceExists) {
+          Stop-Service -Name "${FLASK_SERVICE_NAME}" -Force
+          Write-Host "Flask service stopped."
+      } else {
+          Write-Host "Flask service not found."
       }
-      
-      Write-Host "Flask application stopped."
       EOF
     
     # Create a zip file of the backend
@@ -140,24 +164,40 @@ prepare_nginx:
     # Copy Nginx config to working directory
     - cp ${NGINX_CONFIG_PATH} nginx.conf
     
-    # Create PowerShell script to start/restart Nginx
+    # Create PowerShell script to manage Nginx service with NSSM
     - |
-      cat > start_nginx.ps1 << 'EOF'
-      Write-Host "Stopping Nginx if running..."
-      Stop-Process -Name "nginx" -Force -ErrorAction SilentlyContinue
+      cat > setup_nginx_service.ps1 << 'EOF'
+      Write-Host "Configuring Nginx..."
       
-      Write-Host "Copying Nginx configuration..."
+      # Copy Nginx configuration
       Copy-Item -Path "nginx.conf" -Destination "${NGINX_PATH}\conf\nginx.conf" -Force
       
-      Write-Host "Starting Nginx..."
-      Set-Location -Path "${NGINX_PATH}"
-      Start-Process -FilePath "nginx.exe"
-      Write-Host "Nginx started."
+      # Check if service exists
+      $serviceExists = Get-Service -Name "${NGINX_SERVICE_NAME}" -ErrorAction SilentlyContinue
+      
+      if ($serviceExists) {
+          Write-Host "Restarting existing Nginx service..."
+          Restart-Service -Name "${NGINX_SERVICE_NAME}" -Force
+      } else {
+          Write-Host "Creating Nginx service with NSSM..."
+          # Register the NSSM service for Nginx
+          nssm install "${NGINX_SERVICE_NAME}" "${NGINX_PATH}\nginx.exe"
+          nssm set "${NGINX_SERVICE_NAME}" AppDirectory "${NGINX_PATH}"
+          nssm set "${NGINX_SERVICE_NAME}" Description "Nginx Web Server"
+          nssm set "${NGINX_SERVICE_NAME}" Start SERVICE_AUTO_START
+          nssm set "${NGINX_SERVICE_NAME}" AppStdout "${NGINX_PATH}\logs\nginx_service.log"
+          nssm set "${NGINX_SERVICE_NAME}" AppStderr "${NGINX_PATH}\logs\nginx_service_error.log"
+          
+          # Start the service
+          Start-Service -Name "${NGINX_SERVICE_NAME}"
+      }
+      
+      Write-Host "Nginx service configured and started."
       EOF
     
     # Create a zip file with Nginx-related files
     - apt-get update && apt-get install -y zip
-    - zip nginx_config.zip nginx.conf start_nginx.ps1
+    - zip nginx_config.zip nginx.conf setup_nginx_service.ps1
   artifacts:
     paths:
       - nginx_config.zip
@@ -200,10 +240,14 @@ deploy_application:
         Expand-Archive -Path '${DEPLOY_PATH}\nginx_config.zip' -DestinationPath '${DEPLOY_PATH}' -Force
       "
     
-    # Stop previous Flask instance using PowerShell
+    # Stop previous Flask service
     - |
       ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} powershell -Command "
-        & \"${DEPLOY_PATH}\backend\stop_flask.ps1\"
+        if (Test-Path \"${DEPLOY_PATH}\backend\stop_flask_service.ps1\") {
+          & \"${DEPLOY_PATH}\backend\stop_flask_service.ps1\"
+        } else {
+          Write-Host \"Stop script not found, proceeding anyway.\"
+        }
       "
     
     # Setup Flask environment using PowerShell
@@ -212,16 +256,16 @@ deploy_application:
         & \"${DEPLOY_PATH}\backend\setup_venv.ps1\"
       "
     
-    # Start Flask application using PowerShell
+    # Configure and start Flask service
     - |
       ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} powershell -Command "
-        & \"${DEPLOY_PATH}\backend\start_flask.ps1\"
+        & \"${DEPLOY_PATH}\backend\setup_flask_service.ps1\"
       "
     
-    # Configure and start Nginx using PowerShell
+    # Configure and start Nginx service
     - |
       ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} powershell -Command "
-        & \"${DEPLOY_PATH}\start_nginx.ps1\"
+        & \"${DEPLOY_PATH}\setup_nginx_service.ps1\"
       "
 
 # Job to verify deployment
@@ -240,21 +284,23 @@ verify_deployment:
         unzip pstools.zip -d pstools
       fi
     
-    # Verify Flask application is running using PowerShell
+    # Verify services are running using PowerShell
     - |
       ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} powershell -Command "
-        Get-NetTCPConnection -LocalPort ${FLASK_PORT} -ErrorAction SilentlyContinue
-      "
-    
-    # Verify Nginx is running using PowerShell
-    - |
-      ./pstools/PsExec.exe \\${WINDOWS_SERVER} -u ${WINDOWS_USERNAME} -p ${WINDOWS_PASSWORD} powershell -Command "
-        Get-NetTCPConnection -LocalPort ${NGINX_PORT} -ErrorAction SilentlyContinue
+        Write-Host 'Checking Flask service status...'
+        Get-Service -Name '${FLASK_SERVICE_NAME}' | Select-Object Name, Status, DisplayName
+        
+        Write-Host 'Checking Nginx service status...'
+        Get-Service -Name '${NGINX_SERVICE_NAME}' | Select-Object Name, Status, DisplayName
+        
+        Write-Host 'Checking port availability...'
+        Get-NetTCPConnection -LocalPort ${FLASK_PORT} -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, State
+        Get-NetTCPConnection -LocalPort ${NGINX_PORT} -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, State
       "
     
     - echo "Application deployed successfully:"
-    - echo "- Flask backend running on port ${FLASK_PORT}"
-    - echo "- Nginx serving frontend on port ${NGINX_PORT}"
+    - echo "- Flask backend service '${FLASK_SERVICE_NAME}' should be running"
+    - echo "- Nginx service '${NGINX_SERVICE_NAME}' should be running"
     - echo "- Access the application at http://${WINDOWS_SERVER}:${NGINX_PORT}"
   only:
     - main  # Only run verification on the main branch
