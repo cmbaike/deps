@@ -1,0 +1,452 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="IBM MQ End-to-End Performance Test" enabled="true">
+      <stringProp name="TestPlan.comments">Complete MQ performance test with publisher/subscriber pattern</stringProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" enabled="true">
+        <collectionProp name="Arguments.arguments">
+          <elementProp name="mqHost" elementType="Argument">
+            <stringProp name="Argument.name">mqHost</stringProp>
+            <stringProp name="Argument.value">mq.example.com</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="mqPort" elementType="Argument">
+            <stringProp name="Argument.name">mqPort</stringProp>
+            <stringProp name="Argument.value">443</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="inboundQueue" elementType="Argument">
+            <stringProp name="Argument.name">inboundQueue</stringProp>
+            <stringProp name="Argument.value">inboundQueue</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="outboundQueue" elementType="Argument">
+            <stringProp name="Argument.name">outboundQueue</stringProp>
+            <stringProp name="Argument.value">outboundQueue</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="totalMessages" elementType="Argument">
+            <stringProp name="Argument.name">totalMessages</stringProp>
+            <stringProp name="Argument.value">10000</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="senderThreads" elementType="Argument">
+            <stringProp name="Argument.name">senderThreads</stringProp>
+            <stringProp name="Argument.value">50</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="receiverThreads" elementType="Argument">
+            <stringProp name="Argument.name">receiverThreads</stringProp>
+            <stringProp name="Argument.value">10</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+          <elementProp name="rampUpTime" elementType="Argument">
+            <stringProp name="Argument.name">rampUpTime</stringProp>
+            <stringProp name="Argument.value">30</stringProp>
+            <stringProp name="Argument.metadata">=</stringProp>
+          </elementProp>
+        </collectionProp>
+      </elementProp>
+      <stringProp name="TestPlan.user_define_classpath"></stringProp>
+    </TestPlan>
+    <hashTree>
+      <CSVDataSet guiclass="TestBeanGUI" testclass="CSVDataSet" testname="Message Data Source">
+        <stringProp name="filename">jmeter_data.csv</stringProp>
+        <stringProp name="fileEncoding">UTF-8</stringProp>
+        <stringProp name="variableNames">filename,filepath,messageId,lrn,timestamp</stringProp>
+        <stringProp name="delimiter">,</stringProp>
+        <boolProp name="quotedData">false</boolProp>
+        <boolProp name="recycle">true</boolProp>
+        <boolProp name="stopThread">false</boolProp>
+        <stringProp name="shareMode">shareMode.all</stringProp>
+        <boolProp name="ignoreFirstLine">false</boolProp>
+      </CSVDataSet>
+      <hashTree/>
+      <SetupThreadGroup guiclass="SetupThreadGroupGui" testclass="SetupThreadGroup" testname="Test Setup" enabled="true">
+        <intProp name="ThreadGroup.num_threads">1</intProp>
+        <intProp name="ThreadGroup.ramp_time">1</intProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <stringProp name="LoopController.loops">1</stringProp>
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+        </elementProp>
+      </SetupThreadGroup>
+      <hashTree>
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="Initialize Global Counters">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="script">
+// Initialize global counters and timing
+props.put(&quot;test_start_time&quot;, String.valueOf(System.currentTimeMillis()))
+props.put(&quot;messages_sent&quot;, &quot;0&quot;)
+props.put(&quot;messages_received&quot;, &quot;0&quot;)
+props.put(&quot;first_message_sent_time&quot;, &quot;0&quot;)
+props.put(&quot;last_message_received_time&quot;, &quot;0&quot;)
+props.put(&quot;message_timestamps&quot;, new java.util.concurrent.ConcurrentHashMap())
+
+log.info(&quot;=== MQ Performance Test Initialized ===&quot;)
+log.info(&quot;Target messages: &quot; + vars.get(&quot;totalMessages&quot;))
+log.info(&quot;Sender threads: &quot; + vars.get(&quot;senderThreads&quot;))
+log.info(&quot;Receiver threads: &quot; + vars.get(&quot;receiverThreads&quot;))
+                    </stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="cacheKey">false</stringProp>
+        </JSR223Sampler>
+        <hashTree/>
+      </hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Message Publishers" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">${senderThreads}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${rampUpTime}</stringProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <stringProp name="LoopController.loops">${__intDiv(${totalMessages},${senderThreads})}</stringProp>
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Prepare Message">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="script">try {
+    String filepath = vars.get(&quot;filepath&quot;)
+    if (filepath != null &amp;&amp; !filepath.isEmpty()) {
+        File file = new File(filepath)
+        if (file.exists()) {
+            String content = file.text
+            
+            // Add unique message ID and timestamp for tracking
+            String messageId = vars.get(&quot;messageId&quot;)
+            if (messageId == null || messageId.isEmpty()) {
+                messageId = UUID.randomUUID().toString()
+            }
+            
+            long sendTime = System.currentTimeMillis()
+            vars.put(&quot;sendTimestamp&quot;, String.valueOf(sendTime))
+            vars.put(&quot;uniqueMessageId&quot;, messageId)
+            
+            // Store send timestamp globally for E2E measurement
+            def timestamps = props.get(&quot;message_timestamps&quot;)
+            timestamps.put(messageId, sendTime)
+            
+            // Inject tracking headers into XML
+            content = content.replace(&quot;&lt;?xml&quot;, &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;UTF-8\&quot;?&gt;\n&lt;!-- MessageId: &quot; + messageId + &quot; SendTime: &quot; + sendTime + &quot; --&gt;\n&lt;?xml&quot;)
+            
+            vars.put(&quot;xmlContent&quot;, content)
+            
+            // Track first message sent
+            String firstSent = props.get(&quot;first_message_sent_time&quot;)
+            if (&quot;0&quot;.equals(firstSent)) {
+                props.put(&quot;first_message_sent_time&quot;, String.valueOf(sendTime))
+                log.info(&quot;First message sent at: &quot; + sendTime)
+            }
+            
+        } else {
+            log.error(&quot;File does not exist: &quot; + filepath)
+            vars.put(&quot;xmlContent&quot;, &quot;&lt;error&gt;File not found: &quot; + filepath + &quot;&lt;/error&gt;&quot;)
+        }
+    } else {
+        log.error(&quot;Filepath variable is null or empty&quot;)
+        vars.put(&quot;xmlContent&quot;, &quot;&lt;error&gt;No filepath specified&lt;/error&gt;&quot;)
+    }
+} catch (Exception e) {
+    log.error(&quot;Error preparing message: &quot; + e.getMessage())
+    vars.put(&quot;xmlContent&quot;, &quot;&lt;error&gt;&quot; + e.getMessage() + &quot;&lt;/error&gt;&quot;)
+}
+                    </stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="cacheKey">false</stringProp>
+        </JSR223PreProcessor>
+        <hashTree/>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Send Message to Inbound Queue" enabled="true">
+          <intProp name="HTTPSampler.connect_timeout">10000</intProp>
+          <intProp name="HTTPSampler.response_timeout">30000</intProp>
+          <stringProp name="HTTPSampler.domain">${mqHost}</stringProp>
+          <stringProp name="HTTPSampler.port">${mqPort}</stringProp>
+          <stringProp name="HTTPSampler.protocol">https</stringProp>
+          <stringProp name="HTTPSampler.contentEncoding">UTF-8</stringProp>
+          <stringProp name="HTTPSampler.path">/mq/rest/message</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <stringProp name="HTTPSampler.method">POST</stringProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments">
+              <elementProp name="" elementType="HTTPArgument">
+                <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                <stringProp name="Argument.value">${xmlContent}</stringProp>
+                <stringProp name="Argument.metadata">=</stringProp>
+              </elementProp>
+            </collectionProp>
+          </elementProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Send Headers">
+            <collectionProp name="HeaderManager.headers">
+              <elementProp name="Content-Type" elementType="Header">
+                <stringProp name="Header.name">Content-Type</stringProp>
+                <stringProp name="Header.value">application/xml</stringProp>
+              </elementProp>
+              <elementProp name="x-mq-queue-name" elementType="Header">
+                <stringProp name="Header.name">x-mq-queue-name</stringProp>
+                <stringProp name="Header.value">${inboundQueue}</stringProp>
+              </elementProp>
+              <elementProp name="x-message-id" elementType="Header">
+                <stringProp name="Header.name">x-message-id</stringProp>
+                <stringProp name="Header.value">${uniqueMessageId}</stringProp>
+              </elementProp>
+              <elementProp name="Accept" elementType="Header">
+                <stringProp name="Header.name">Accept</stringProp>
+                <stringProp name="Header.value">application/xml</stringProp>
+              </elementProp>
+            </collectionProp>
+          </HeaderManager>
+          <hashTree/>
+          <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Track Send Success">
+            <stringProp name="scriptLanguage">groovy</stringProp>
+            <stringProp name="script">if (responseCode.equals(&quot;200&quot;) || responseCode.equals(&quot;201&quot;) || responseCode.equals(&quot;202&quot;)) {
+    int sent = Integer.parseInt(props.get(&quot;messages_sent&quot;)) + 1
+    props.put(&quot;messages_sent&quot;, String.valueOf(sent))
+    
+    if (sent % 1000 == 0) {
+        log.info(&quot;Messages sent: &quot; + sent)
+    }
+}</stringProp>
+            <stringProp name="parameters"></stringProp>
+            <stringProp name="filename"></stringProp>
+            <stringProp name="cacheKey">false</stringProp>
+          </JSR223PostProcessor>
+          <hashTree/>
+        </hashTree>
+      </hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Message Subscribers" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">${receiverThreads}</stringProp>
+        <intProp name="ThreadGroup.ramp_time">5</intProp>
+        <stringProp name="ThreadGroup.duration">${__intSum(300,${__intDiv(${totalMessages},10)})}</stringProp>
+        <longProp name="ThreadGroup.delay">2</longProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <intProp name="LoopController.loops">-1</intProp>
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <WhileController guiclass="WhileControllerGui" testclass="WhileController" testname="Continue Until All Messages Received" enabled="true">
+          <stringProp name="WhileController.condition">${__javaScript(parseInt(&quot;${__P(messages_received,0)}&quot;) &lt; parseInt(&quot;${totalMessages}&quot;),)}</stringProp>
+        </WhileController>
+        <hashTree>
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Poll Outbound Queue" enabled="true">
+            <intProp name="HTTPSampler.connect_timeout">5000</intProp>
+            <intProp name="HTTPSampler.response_timeout">15000</intProp>
+            <stringProp name="HTTPSampler.domain">${mqHost}</stringProp>
+            <stringProp name="HTTPSampler.port">${mqPort}</stringProp>
+            <stringProp name="HTTPSampler.protocol">https</stringProp>
+            <stringProp name="HTTPSampler.contentEncoding">UTF-8</stringProp>
+            <stringProp name="HTTPSampler.path">/mq/rest/message</stringProp>
+            <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+            <stringProp name="HTTPSampler.method">GET</stringProp>
+            <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+            <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+            <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments" testname="User Defined Variables">
+              <collectionProp name="Arguments.arguments"/>
+            </elementProp>
+          </HTTPSamplerProxy>
+          <hashTree>
+            <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Receive Headers">
+              <collectionProp name="HeaderManager.headers">
+                <elementProp name="x-mq-queue-name" elementType="Header">
+                  <stringProp name="Header.name">x-mq-queue-name</stringProp>
+                  <stringProp name="Header.value">${outboundQueue}</stringProp>
+                </elementProp>
+                <elementProp name="Accept" elementType="Header">
+                  <stringProp name="Header.name">Accept</stringProp>
+                  <stringProp name="Header.value">application/xml</stringProp>
+                </elementProp>
+              </collectionProp>
+            </HeaderManager>
+            <hashTree/>
+            <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Process Received Message">
+              <stringProp name="scriptLanguage">groovy</stringProp>
+              <stringProp name="script">if (responseCode.equals(&quot;200&quot;) &amp;&amp; responseData != null &amp;&amp; responseData.length &gt; 0) {
+    
+    String responseBody = new String(responseData)
+    long receiveTime = System.currentTimeMillis()
+    
+    // Extract message ID from response
+    String messageId = null
+    def pattern = ~/MessageId:\s*([^\s]+)/
+    def matcher = pattern.matcher(responseBody)
+    if (matcher.find()) {
+        messageId = matcher.group(1)
+    }
+    
+    if (messageId != null) {
+        // Calculate end-to-end latency
+        def timestamps = props.get(&quot;message_timestamps&quot;)
+        Long sendTime = timestamps.get(messageId)
+        
+        if (sendTime != null) {
+            long latency = receiveTime - sendTime.longValue()
+            vars.put(&quot;e2e_latency&quot;, String.valueOf(latency))
+            
+            // Track received count
+            int received = Integer.parseInt(props.get(&quot;messages_received&quot;)) + 1
+            props.put(&quot;messages_received&quot;, String.valueOf(received))
+            props.put(&quot;last_message_received_time&quot;, String.valueOf(receiveTime))
+            
+            // Log progress
+            if (received % 1000 == 0 || received == Integer.parseInt(vars.get(&quot;totalMessages&quot;))) {
+                log.info(&quot;Messages received: &quot; + received + &quot;, E2E Latency: &quot; + latency + &quot;ms&quot;)
+            }
+            
+            // Final summary when test completes
+            if (received == Integer.parseInt(vars.get(&quot;totalMessages&quot;))) {
+                long testStart = Long.parseLong(props.get(&quot;first_message_sent_time&quot;))
+                long testEnd = receiveTime
+                long totalDuration = testEnd - testStart
+                
+                log.info(&quot;=== TEST COMPLETED ===&quot;)
+                log.info(&quot;Total messages: &quot; + received)
+                log.info(&quot;Total duration: &quot; + totalDuration + &quot;ms (&quot; + (totalDuration/1000.0) + &quot;s)&quot;)
+                log.info(&quot;Throughput: &quot; + (received * 1000.0 / totalDuration) + &quot; msg/sec&quot;)
+                log.info(&quot;Average latency: &quot; + latency + &quot;ms (last message)&quot;)
+            }
+            
+            // Remove processed timestamp to save memory
+            timestamps.remove(messageId)
+        }
+    }
+} else if (responseCode.equals(&quot;204&quot;)) {
+    // No message available, short pause
+    Thread.sleep(100)
+}</stringProp>
+              <stringProp name="parameters"></stringProp>
+              <stringProp name="filename"></stringProp>
+              <stringProp name="cacheKey">false</stringProp>
+            </JSR223PostProcessor>
+            <hashTree/>
+          </hashTree>
+          <ConstantTimer guiclass="ConstantTimerGui" testclass="ConstantTimer" testname="Poll Interval">
+            <stringProp name="ConstantTimer.delay">50</stringProp>
+          </ConstantTimer>
+          <hashTree/>
+        </hashTree>
+      </hashTree>
+      <PostThreadGroup guiclass="PostThreadGroupGui" testclass="PostThreadGroup" testname="Test Teardown" enabled="true">
+        <intProp name="ThreadGroup.num_threads">1</intProp>
+        <intProp name="ThreadGroup.ramp_time">1</intProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <stringProp name="LoopController.loops">1</stringProp>
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+        </elementProp>
+      </PostThreadGroup>
+      <hashTree>
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="Final Report">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="script">
+long testStart = Long.parseLong(props.get(&quot;first_message_sent_time&quot;))
+long testEnd = Long.parseLong(props.get(&quot;last_message_received_time&quot;))
+int sent = Integer.parseInt(props.get(&quot;messages_sent&quot;))
+int received = Integer.parseInt(props.get(&quot;messages_received&quot;))
+
+log.info(&quot;=== FINAL TEST REPORT ===&quot;)
+log.info(&quot;Messages sent: &quot; + sent)
+log.info(&quot;Messages received: &quot; + received)
+log.info(&quot;Success rate: &quot; + ((received * 100.0) / sent) + &quot;%&quot;)
+
+if (testStart &gt; 0 &amp;&amp; testEnd &gt; 0) {
+    long totalDuration = testEnd - testStart
+    log.info(&quot;End-to-end duration: &quot; + totalDuration + &quot;ms (&quot; + (totalDuration/1000.0) + &quot;s)&quot;)
+    log.info(&quot;Overall throughput: &quot; + (received * 1000.0 / totalDuration) + &quot; msg/sec&quot;)
+}
+                    </stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="cacheKey">false</stringProp>
+        </JSR223Sampler>
+        <hashTree/>
+      </hashTree>
+      <ResultCollector guiclass="SummaryReport" testclass="ResultCollector" testname="Summary Report">
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <objProp>
+          <name>saveConfig</name>
+          <value class="SampleSaveConfiguration">
+            <time>true</time>
+            <latency>true</latency>
+            <timestamp>true</timestamp>
+            <success>true</success>
+            <label>true</label>
+            <code>true</code>
+            <message>true</message>
+            <threadName>true</threadName>
+            <dataType>true</dataType>
+            <encoding>false</encoding>
+            <assertions>true</assertions>
+            <subresults>true</subresults>
+            <responseData>false</responseData>
+            <samplerData>false</samplerData>
+            <xml>false</xml>
+            <fieldNames>true</fieldNames>
+            <responseHeaders>false</responseHeaders>
+            <requestHeaders>false</requestHeaders>
+            <responseDataOnError>false</responseDataOnError>
+            <saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage>
+            <assertionsResultsToSave>0</assertionsResultsToSave>
+            <bytes>true</bytes>
+            <sentBytes>true</sentBytes>
+            <url>true</url>
+            <threadCounts>true</threadCounts>
+            <idleTime>true</idleTime>
+            <connectTime>true</connectTime>
+          </value>
+        </objProp>
+        <stringProp name="filename">results_summary.csv</stringProp>
+      </ResultCollector>
+      <hashTree/>
+      <ResultCollector guiclass="ViewResultsFullVisualizer" testclass="ResultCollector" testname="View Results Tree" enabled="false">
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <objProp>
+          <name>saveConfig</name>
+          <value class="SampleSaveConfiguration">
+            <time>true</time>
+            <latency>true</latency>
+            <timestamp>true</timestamp>
+            <success>true</success>
+            <label>true</label>
+            <code>true</code>
+            <message>true</message>
+            <threadName>true</threadName>
+            <dataType>true</dataType>
+            <encoding>false</encoding>
+            <assertions>true</assertions>
+            <subresults>true</subresults>
+            <responseData>true</responseData>
+            <samplerData>true</samplerData>
+            <xml>false</xml>
+            <fieldNames>true</fieldNames>
+            <responseHeaders>true</responseHeaders>
+            <requestHeaders>true</requestHeaders>
+            <responseDataOnError>false</responseDataOnError>
+            <saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage>
+            <assertionsResultsToSave>0</assertionsResultsToSave>
+            <bytes>true</bytes>
+            <sentBytes>true</sentBytes>
+            <url>true</url>
+            <threadCounts>true</threadCounts>
+            <idleTime>true</idleTime>
+            <connectTime>true</connectTime>
+          </value>
+        </objProp>
+        <stringProp name="filename"></stringProp>
+      </ResultCollector>
+      <hashTree/>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
